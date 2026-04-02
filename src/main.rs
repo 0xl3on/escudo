@@ -119,9 +119,17 @@ fn run_audit(cli: Cli) {
         OutputFormat::Human
     };
 
-    let manifest_path = cli.path.map(|p| {
-        let p = if p.ends_with("Cargo.toml") {
+    let project_dir = cli.path.as_deref().map(|p| {
+        if p.ends_with("Cargo.toml") {
+            p.parent().unwrap_or(p)
+        } else {
             p
+        }
+    });
+
+    let manifest_path = cli.path.as_ref().map(|p| {
+        let p = if p.ends_with("Cargo.toml") {
+            p.clone()
         } else {
             p.join("Cargo.toml")
         };
@@ -129,13 +137,15 @@ fn run_audit(cli: Cli) {
     });
 
     let config_path = cli.config.as_deref();
-    let has_explicit_config = config_path.is_some() || std::path::Path::new("escudo.toml").exists();
+    let has_explicit_config = config_path.is_some()
+        || project_dir.is_some_and(|d| d.join("escudo.toml").exists())
+        || std::path::Path::new("escudo.toml").exists();
     let has_cli_overrides = cli.cooldown_days.is_some()
         || cli.allow_git_deps
         || cli.allow_path_deps
         || cli.max_duplicate_versions.is_some();
 
-    let mut config = match load_config(config_path) {
+    let mut config = match load_config(config_path, project_dir) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("error: {e}");

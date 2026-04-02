@@ -53,11 +53,14 @@ impl Default for EscudoConfig {
 
 /// Load an [`EscudoConfig`] from disk.
 ///
-/// - If `path` is `Some`, read that file.
-/// - Otherwise look for `escudo.toml` in the current directory.
+/// - If `config_path` is `Some`, read that file.
+/// - Otherwise look for `escudo.toml` in `project_dir`, then in cwd.
 /// - If neither exists, return the built-in defaults.
-pub fn load_config(path: Option<&str>) -> Result<EscudoConfig, ConfigError> {
-    let config_path = match path {
+pub fn load_config(
+    config_path: Option<&str>,
+    project_dir: Option<&Path>,
+) -> Result<EscudoConfig, ConfigError> {
+    let config_path = match config_path {
         Some(p) => {
             let p = Path::new(p);
             if p.exists() {
@@ -69,12 +72,12 @@ pub fn load_config(path: Option<&str>) -> Result<EscudoConfig, ConfigError> {
             }
         }
         None => {
-            let default_path = Path::new("escudo.toml");
-            if default_path.exists() {
-                Some(default_path.to_path_buf())
-            } else {
-                None
-            }
+            // Look in project dir first, then cwd.
+            let candidates = [
+                project_dir.map(|d| d.join("escudo.toml")),
+                Some(Path::new("escudo.toml").to_path_buf()),
+            ];
+            candidates.into_iter().flatten().find(|p| p.exists())
         }
     };
 
@@ -156,13 +159,13 @@ cooldown_days = 30
     fn test_load_config_no_file_returns_defaults() {
         // When no path is given and escudo.toml doesn't exist in cwd,
         // we should get defaults.
-        let cfg = load_config(None).unwrap();
+        let cfg = load_config(None, None).unwrap();
         assert_eq!(cfg.cooldown_days, 7);
     }
 
     #[test]
     fn test_load_config_missing_explicit_path_errors() {
-        let result = load_config(Some("/tmp/nonexistent_escudo_config_12345.toml"));
+        let result = load_config(Some("/tmp/nonexistent_escudo_config_12345.toml"), None);
         assert!(result.is_err());
     }
 }
