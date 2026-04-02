@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>escudo audit — {{project_name}}</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, sans-serif; color: #1a1a1a; background: #fafafa; line-height: 1.5; }
+  .container { max-width: 56rem; margin: 0 auto; padding: 2rem 1.5rem; }
+  header { margin-bottom: 2rem; }
+  header h1 { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.02em; }
+  header h1 span { color: #6b7280; font-weight: 400; }
+  .meta { display: flex; gap: 2rem; flex-wrap: wrap; margin-top: 0.5rem; color: #6b7280; font-size: 0.85rem; }
+  .badge { display: inline-block; padding: 0.15rem 0.6rem; border-radius: 4px; font-size: 0.8rem; font-weight: 600; letter-spacing: 0.02em; }
+  .badge-pass { background: #dcfce7; color: #166534; }
+  .badge-fail { background: #fee2e2; color: #991b1b; }
+  .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); gap: 1rem; margin: 1.5rem 0 2rem; }
+  .stat { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 1rem 1.25rem; }
+  .stat .label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #6b7280; }
+  .stat .value { font-size: 1.75rem; font-weight: 700; margin-top: 0.2rem; }
+  section { margin-bottom: 2rem; }
+  section h2 { font-size: 1.1rem; font-weight: 600; margin-bottom: 0.75rem; padding-bottom: 0.4rem; border-bottom: 2px solid #e5e7eb; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.875rem; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden; }
+  th { text-align: left; padding: 0.6rem 0.75rem; background: #f9fafb; font-weight: 600; color: #374151; border-bottom: 1px solid #e5e7eb; }
+  td { padding: 0.5rem 0.75rem; border-bottom: 1px solid #f3f4f6; }
+  tr:last-child td { border-bottom: none; }
+  .severity-warn { color: #b45309; }
+  .severity-error { color: #dc2626; }
+  .kind { display: inline-block; padding: 0.1rem 0.45rem; border-radius: 3px; font-size: 0.75rem; font-weight: 500; background: #f3f4f6; color: #4b5563; }
+  .empty { text-align: center; padding: 2rem; color: #9ca3af; font-style: italic; }
+  footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #e5e7eb; color: #9ca3af; font-size: 0.75rem; display: flex; justify-content: space-between; }
+  footer a { color: #6b7280; text-decoration: none; }
+  footer a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<div class="container">
+
+<header>
+  <h1>escudo <span>supply chain audit</span></h1>
+  <div class="meta">
+    <span>{{date}}</span>
+    <span>{{project_name}}</span>
+    {{#if clean}}
+    <span class="badge badge-pass">PASS</span>
+    {{else}}
+    <span class="badge badge-fail">{{violations_count}} VIOLATION{{#if violations_plural}}S{{/if}}</span>
+    {{/if}}
+  </div>
+</header>
+
+<div class="summary">
+  <div class="stat">
+    <div class="label">Packages checked</div>
+    <div class="value">{{packages_checked}}</div>
+  </div>
+  <div class="stat">
+    <div class="label">Unverified</div>
+    <div class="value severity-error">{{unverified_count}}</div>
+  </div>
+  <div class="stat">
+    <div class="label">Freshness issues</div>
+    <div class="value severity-warn">{{freshness_count}}</div>
+  </div>
+  <div class="stat">
+    <div class="label">Policy issues</div>
+    <div class="value severity-error">{{policy_count}}</div>
+  </div>
+</div>
+
+{{#if unverified_crates}}
+<section>
+  <h2>Unverified crates</h2>
+  <p style="color: #dc2626; font-size: 0.875rem; margin-bottom: 0.75rem;">These versions were not found in the crates.io API response. This could indicate yanked versions or a compromised API.</p>
+  <table>
+    <thead><tr><th>Crate</th><th>Version</th></tr></thead>
+    <tbody>
+    {{#each unverified_crates}}
+    <tr>
+      <td class="severity-error"><strong>{{this.crate_name}}</strong></td>
+      <td>{{this.version}}</td>
+    </tr>
+    {{/each}}
+    </tbody>
+  </table>
+</section>
+{{/if}}
+
+{{#if freshness_violations}}
+<section>
+  <h2>Freshness violations</h2>
+  <table>
+    <thead><tr><th>Crate</th><th>Version</th><th>Published</th><th>Age</th><th>Cooldown</th></tr></thead>
+    <tbody>
+    {{#each freshness_violations}}
+    <tr>
+      <td><strong>{{this.crate_name}}</strong></td>
+      <td>{{this.version}}</td>
+      <td>{{this.published}}</td>
+      <td class="severity-warn">{{this.age_days}}d</td>
+      <td>{{this.cooldown_days}}d</td>
+    </tr>
+    {{/each}}
+    </tbody>
+  </table>
+</section>
+{{/if}}
+
+{{#if policy_violations}}
+<section>
+  <h2>Policy violations</h2>
+  <table>
+    <thead><tr><th>Kind</th><th>Details</th></tr></thead>
+    <tbody>
+    {{#each policy_violations}}
+    <tr>
+      <td><span class="kind">{{this.kind}}</span></td>
+      <td class="severity-error">{{this.message}}</td>
+    </tr>
+    {{/each}}
+    </tbody>
+  </table>
+</section>
+{{/if}}
+
+{{#if clean}}
+<section>
+  <p class="empty">No violations found. All packages passed.</p>
+</section>
+{{/if}}
+
+<footer>
+  <span>generated by <a href="https://github.com/0xl3on/escudo">escudo</a> v{{version}}</span>
+  <span>{{date}}</span>
+</footer>
+
+</div>
+</body>
+</html>

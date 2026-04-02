@@ -1,0 +1,7 @@
+# Relaxed config — for projects with many transitive deps.
+cooldown_days = 3
+allow_git_deps = true
+allow_path_deps = true
+max_duplicate_versions = 5
+allowed_licenses = ["MIT", "Apache-2.0", "BSD-3-Clause", "ISC", "Unicode-3.0", "Zlib", "CDLA-Permissive-2.0", "MPL-2.0", "BSL-1.0"]
+banned_crates = []

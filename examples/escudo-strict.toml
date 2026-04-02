@@ -1,0 +1,7 @@
+# Maximum strictness — use for high-security projects.
+cooldown_days = 30
+allow_git_deps = false
+allow_path_deps = false
+max_duplicate_versions = 1
+allowed_licenses = ["MIT", "Apache-2.0"]
+banned_crates = []
