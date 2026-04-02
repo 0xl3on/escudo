@@ -54,9 +54,6 @@ struct CrateVersionsCache {
     versions: Vec<VersionInfo>,
 }
 
-/// How long a cache entry stays valid.
-const CACHE_TTL: Duration = Duration::from_secs(60 * 60); // 1 hour
-
 /// Max concurrent requests to crates.io (be respectful).
 const MAX_CONCURRENT_REQUESTS: usize = 10;
 
@@ -103,32 +100,41 @@ pub async fn check_freshness(
 
     let now = Utc::now();
 
-    let crate_names: Vec<String> = {
-        let mut seen = std::collections::HashSet::new();
-        let mut names = Vec::new();
-        for p in packages
-            .iter()
-            .filter(|p| p.source == PackageSource::CratesIo)
-        {
-            if !is_valid_crate_name(&p.name) {
-                return Err(FreshnessError::InvalidCrateName(p.name.clone()));
-            }
-            if seen.insert(p.name.clone()) {
-                names.push(p.name.clone());
-            }
-        }
-        names
-    };
-
-    let total = crate_names.len();
-    let cached = crate_names
+    // Collect (crate_name -> set of versions needed) for all crates.io deps.
+    let mut needed: HashMap<String, Vec<String>> = HashMap::new();
+    for p in packages
         .iter()
-        .filter(|name| {
-            let path = cache_dir.join(format!("{}.json", name));
-            load_cache(&path, now).ok().flatten().is_some()
-        })
-        .count();
-    let to_fetch = total - cached;
+        .filter(|p| p.source == PackageSource::CratesIo)
+    {
+        if !is_valid_crate_name(&p.name) {
+            return Err(FreshnessError::InvalidCrateName(p.name.clone()));
+        }
+        needed
+            .entry(p.name.clone())
+            .or_default()
+            .push(p.version.clone());
+    }
+
+    // Check which crates need a fresh fetch (cache miss or needed version not in cache).
+    let mut to_fetch_names: Vec<String> = Vec::new();
+    for (name, versions) in &needed {
+        let cache_path = cache_dir.join(format!("{}.json", name));
+        let has_all = load_cache(&cache_path)
+            .ok()
+            .flatten()
+            .is_some_and(|cached| {
+                versions
+                    .iter()
+                    .all(|v| cached.versions.iter().any(|cv| cv.num == *v))
+            });
+        if !has_all {
+            to_fetch_names.push(name.clone());
+        }
+    }
+
+    let total = needed.len();
+    let to_fetch = to_fetch_names.len();
+    let cached = total - to_fetch;
 
     if to_fetch > 0 {
         eprintln!(
@@ -139,18 +145,30 @@ pub async fn check_freshness(
         eprintln!("checking {} crates (all cached)", total);
     }
 
+    // Load cached crates into the version map first.
+    let mut version_map: HashMap<String, Vec<VersionInfo>> = HashMap::new();
+    for name in needed.keys() {
+        let cache_path = cache_dir.join(format!("{}.json", name));
+        if let Some(cached) = load_cache(&cache_path)? {
+            if !to_fetch_names.contains(name) {
+                version_map.insert(name.clone(), cached.versions);
+            }
+        }
+    }
+
+    // Fetch remaining crates concurrently.
     let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS));
     let client = Arc::new(client);
     let cache_dir = Arc::new(cache_dir);
 
-    let mut handles = Vec::with_capacity(crate_names.len());
-    for name in crate_names {
+    let mut handles = Vec::with_capacity(to_fetch_names.len());
+    for name in to_fetch_names {
         let sem = Arc::clone(&semaphore);
         let cli = Arc::clone(&client);
         let cdir = Arc::clone(&cache_dir);
         handles.push(tokio::spawn(async move {
             let _permit = sem.acquire().await.expect("semaphore closed");
-            let versions = fetch_versions(&cli, &cdir, &name, now).await;
+            let versions = fetch_versions(&cli, &cdir, &name).await;
             (name, versions)
         }));
     }
@@ -228,20 +246,13 @@ pub async fn check_freshness(
     })
 }
 
-/// Return the cached version list if fresh enough, otherwise query crates.io
-/// and persist the result to disk.
+/// Fetch version list from crates.io and persist to disk cache.
 async fn fetch_versions(
     client: &reqwest::Client,
     cache_dir: &std::path::Path,
     crate_name: &str,
-    now: DateTime<Utc>,
 ) -> Result<Vec<VersionInfo>, FreshnessError> {
     let cache_path = cache_dir.join(format!("{}.json", crate_name));
-
-    // Try loading a valid cache entry first.
-    if let Some(cached) = load_cache(&cache_path, now)? {
-        return Ok(cached.versions);
-    }
 
     let url = format!("https://crates.io/api/v1/crates/{}/versions", crate_name);
 
@@ -303,7 +314,7 @@ async fn fetch_versions(
         // Don't cache empty responses — could be an API anomaly.
         if !versions.is_empty() {
             let entry = CrateVersionsCache {
-                fetched_at: now,
+                fetched_at: Utc::now(),
                 versions: versions.clone(),
             };
             let _ = save_cache(&cache_path, &entry);
@@ -332,12 +343,9 @@ fn cache_directory() -> Result<PathBuf, FreshnessError> {
     Ok(base.join("escudo"))
 }
 
-/// Try to load and deserialize a cache file. Returns `None` when the file
-/// doesn't exist or is older than [`CACHE_TTL`].
-fn load_cache(
-    path: &std::path::Path,
-    now: DateTime<Utc>,
-) -> Result<Option<CrateVersionsCache>, FreshnessError> {
+/// Try to load and deserialize a cache file. Cache entries never expire —
+/// publish dates for a given version are immutable on crates.io.
+fn load_cache(path: &std::path::Path) -> Result<Option<CrateVersionsCache>, FreshnessError> {
     if !path.exists() {
         return Ok(None);
     }
@@ -349,15 +357,6 @@ fn load_cache(
             path: path.display().to_string(),
             source: e,
         })?;
-
-    let age = now
-        .signed_duration_since(entry.fetched_at)
-        .to_std()
-        .unwrap_or(Duration::ZERO);
-
-    if age > CACHE_TTL {
-        return Ok(None);
-    }
 
     Ok(Some(entry))
 }
@@ -389,7 +388,7 @@ mod tests {
     #[test]
     fn test_load_cache_returns_none_for_missing_file() {
         let path = PathBuf::from("/tmp/escudo_test_nonexistent_cache_file.json");
-        let result = load_cache(&path, Utc::now()).unwrap();
+        let result = load_cache(&path).unwrap();
         assert!(result.is_none());
     }
 
@@ -410,32 +409,11 @@ mod tests {
 
         save_cache(&path, &entry).unwrap();
 
-        let loaded = load_cache(&path, now).unwrap();
+        let loaded = load_cache(&path).unwrap();
         assert!(loaded.is_some());
         let loaded = loaded.unwrap();
         assert_eq!(loaded.versions.len(), 1);
         assert_eq!(loaded.versions[0].num, "1.0.0");
-
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_dir(&dir);
-    }
-
-    #[test]
-    fn test_expired_cache_returns_none() {
-        let dir = std::env::temp_dir().join("escudo_freshness_test_expired");
-        let _ = std::fs::create_dir_all(&dir);
-        let path = dir.join("old_crate.json");
-
-        let two_hours_ago = Utc::now() - chrono::Duration::hours(2);
-        let entry = CrateVersionsCache {
-            fetched_at: two_hours_ago,
-            versions: vec![],
-        };
-
-        save_cache(&path, &entry).unwrap();
-
-        let loaded = load_cache(&path, Utc::now()).unwrap();
-        assert!(loaded.is_none());
 
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_dir(&dir);
