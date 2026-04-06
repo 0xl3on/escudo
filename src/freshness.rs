@@ -173,9 +173,8 @@ pub async fn check_freshness(
         }));
     }
 
-    // Collect results into a lookup map: crate_name -> Vec<VersionInfo>.
+    // Collect results into the lookup map: crate_name -> Vec<VersionInfo>.
     // Errors are fatal — if we can't verify a crate, the audit must fail.
-    let mut version_map: HashMap<String, Vec<VersionInfo>> = HashMap::new();
     for handle in handles {
         let (name, result) = handle.await.map_err(|_| FreshnessError::TaskPanicked)?;
         let versions = result?;
