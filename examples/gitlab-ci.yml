@@ -15,5 +15,5 @@ supply-chain:
     CARGO_HOME: ${CI_PROJECT_DIR}/.cargo
     CARGO_TERM_COLOR: always
   script:
-    - cargo install escudo@0.1.0 --locked
+    - cargo install escudo@0.1.1 --locked
     - escudo --no-color
