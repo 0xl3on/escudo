@@ -70,8 +70,8 @@ const MAX_RETRIES: u32 = 5;
 const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Deserialize)]
-struct CratesIoVersionsResponse {
-    versions: Vec<CratesIoVersion>,
+struct CratesIoSingleVersionResponse {
+    version: CratesIoVersion,
 }
 
 #[derive(Debug, Deserialize)]
@@ -166,9 +166,10 @@ pub async fn check_freshness(
         let sem = Arc::clone(&semaphore);
         let cli = Arc::clone(&client);
         let cdir = Arc::clone(&cache_dir);
+        let versions_needed = needed.get(&name).cloned().unwrap_or_default();
         handles.push(tokio::spawn(async move {
             let _permit = sem.acquire().await.expect("semaphore closed");
-            let versions = fetch_versions(&cli, &cdir, &name).await;
+            let versions = fetch_versions(&cli, &cdir, &name, &versions_needed).await;
             (name, versions)
         }));
     }
@@ -245,17 +246,58 @@ pub async fn check_freshness(
     })
 }
 
-/// Fetch version list from crates.io and persist to disk cache.
+/// Fetch only the needed versions from crates.io and persist to disk cache.
+///
+/// Queries the per-version endpoint (`/crates/{name}/{version}`) directly
+/// instead of listing all versions, which avoids pagination issues.
 async fn fetch_versions(
     client: &reqwest::Client,
     cache_dir: &std::path::Path,
     crate_name: &str,
+    needed_versions: &[String],
 ) -> Result<Vec<VersionInfo>, FreshnessError> {
     let cache_path = cache_dir.join(format!("{}.json", crate_name));
 
-    let url = format!("https://crates.io/api/v1/crates/{}/versions", crate_name);
+    // Start from any existing cached versions so we don't re-fetch them.
+    let mut all_versions: Vec<VersionInfo> = load_cache(&cache_path)?
+        .map(|c| c.versions)
+        .unwrap_or_default();
 
-    // Retry with exponential backoff on 429 rate limits.
+    for version in needed_versions {
+        if all_versions.iter().any(|v| v.num == *version) {
+            continue;
+        }
+
+        match fetch_single_version(client, crate_name, version).await {
+            Ok(vi) => all_versions.push(vi),
+            Err(FreshnessError::HttpStatus { status, .. })
+                if status == reqwest::StatusCode::NOT_FOUND =>
+            {
+                // Version not found — will be caught as unverified downstream.
+            }
+            Err(e) => return Err(e),
+        }
+    }
+
+    if !all_versions.is_empty() {
+        let entry = CrateVersionsCache {
+            fetched_at: Utc::now(),
+            versions: all_versions.clone(),
+        };
+        let _ = save_cache(&cache_path, &entry);
+    }
+
+    Ok(all_versions)
+}
+
+/// Fetch a single version from the crates.io per-version endpoint.
+async fn fetch_single_version(
+    client: &reqwest::Client,
+    crate_name: &str,
+    version: &str,
+) -> Result<VersionInfo, FreshnessError> {
+    let url = format!("https://crates.io/api/v1/crates/{}/{}", crate_name, version);
+
     let mut backoff = INITIAL_BACKOFF;
     for attempt in 0..=MAX_RETRIES {
         let resp = client
@@ -275,9 +317,10 @@ async fn fetch_versions(
         if !status.is_success() {
             if is_retryable && attempt < MAX_RETRIES {
                 eprintln!(
-                    "HTTP {} on `{}`, retrying in {}s (attempt {}/{})",
+                    "HTTP {} on `{} v{}`, retrying in {}s (attempt {}/{})",
                     status.as_u16(),
                     crate_name,
+                    version,
                     backoff.as_secs(),
                     attempt + 1,
                     MAX_RETRIES
@@ -292,8 +335,7 @@ async fn fetch_versions(
             });
         }
 
-        // Success — parse, validate, and cache.
-        let body: CratesIoVersionsResponse =
+        let body: CratesIoSingleVersionResponse =
             resp.json()
                 .await
                 .map_err(|e| FreshnessError::ParseResponse {
@@ -301,28 +343,12 @@ async fn fetch_versions(
                     source: e,
                 })?;
 
-        let versions: Vec<VersionInfo> = body
-            .versions
-            .into_iter()
-            .map(|v| VersionInfo {
-                num: v.num,
-                created_at: v.created_at,
-            })
-            .collect();
-
-        // Don't cache empty responses — could be an API anomaly.
-        if !versions.is_empty() {
-            let entry = CrateVersionsCache {
-                fetched_at: Utc::now(),
-                versions: versions.clone(),
-            };
-            let _ = save_cache(&cache_path, &entry);
-        }
-
-        return Ok(versions);
+        return Ok(VersionInfo {
+            num: body.version.num,
+            created_at: body.version.created_at,
+        });
     }
 
-    // Should never reach here, but if it does, treat as rate limit failure.
     Err(FreshnessError::HttpStatus {
         crate_name: crate_name.to_string(),
         status: reqwest::StatusCode::TOO_MANY_REQUESTS,
