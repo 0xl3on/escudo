@@ -75,6 +75,24 @@ days = 3
 
 Setting `max_duplicate_versions` or `allowed_licenses` in the config file enables those checks. Omitting them disables them.
 
+### Exceptions
+
+Exceptions override the global `cooldown_days` for specific crates. All three fields are required:
+
+```toml
+[[exceptions]]
+crate = "fastrand"
+reason = "transitive dep from iroh, out of our control"
+days = 0
+
+[[exceptions]]
+crate = "tokio"
+reason = "tracking latest async runtime"
+days = 3
+```
+
+`days = 0` effectively disables the freshness check for that crate. If an exception references a crate that isn't in your dependency tree, escudo prints a warning to stderr so you can clean up stale entries.
+
 ## Checks
 
 | Check | What it catches |
@@ -188,6 +206,51 @@ Defenses against a compromised crates.io API:
 - **Smart retries** — 429 and 5xx get exponential backoff. 4xx errors fail immediately.
 - **Freshness errors are fatal** — if any crate cannot be verified, the audit fails. No silent skips.
 - **Empty API responses are not cached** — prevents cache poisoning from anomalous responses.
+
+## Library usage
+
+Escudo can be used as a library. Add it to your `Cargo.toml`:
+
+```toml
+[dependencies]
+escudo = "0.1.1"
+```
+
+```rust
+use escudo::{check, CheckOptions};
+use escudo::config::EscudoConfig;
+
+#[tokio::main]
+async fn main() -> Result<(), escudo::error::EscudoError> {
+    let config = EscudoConfig::default();
+    let opts = CheckOptions {
+        manifest_path: None,     // current directory
+        skip_freshness: false,
+    };
+
+    let report = check(&config, &opts).await?;
+
+    println!("checked {} packages", report.packages_checked);
+    if report.violations.is_empty() {
+        println!("clean");
+    } else {
+        for v in &report.violations {
+            println!("  {}", v);
+        }
+    }
+    Ok(())
+}
+```
+
+### Key types
+
+| Type | Description |
+|------|-------------|
+| `EscudoConfig` | Deserialized `escudo.toml` — all fields optional with sensible defaults |
+| `CheckOptions` | Runtime options: `manifest_path`, `skip_freshness` |
+| `EscudoReport` | Result of an audit: `packages_checked` count + `violations` vec |
+| `Violation` | Enum: `Freshness(FreshnessViolation)`, `Policy(PolicyViolation)`, `Unverified { crate_name, version }` |
+| `EscudoError` | Top-level error: `Config`, `Metadata`, `Freshness`, `Report` variants |
 
 ## License
 
