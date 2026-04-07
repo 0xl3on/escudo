@@ -80,7 +80,7 @@ Setting `max_duplicate_versions` or `allowed_licenses` in the config file enable
 | Check | What it catches |
 |-------|----------------|
 | Unverified | Crate version not found in crates.io API response. Could indicate a yanked version, registry inconsistency, or compromised API. Always fails the audit. |
-| Freshness | Crate version published within `cooldown_days`. Queries crates.io with 1-hour disk cache. Future publish dates are rejected. |
+| Freshness | Crate version published within `cooldown_days`. Queries crates.io with a persistent disk cache (refetches only when a required version is missing). Future publish dates are rejected. |
 | Git deps | Dependencies sourced from git repos (unless `allow_git_deps = true`). |
 | Path deps | Local path dependencies (unless `allow_path_deps = true`). |
 | Duplicates | Same crate with multiple versions exceeding `max_duplicate_versions`. Only checked when set. |
