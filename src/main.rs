@@ -87,7 +87,21 @@ fn main() {
 fn run_upgrade() {
     let current = env!("CARGO_PKG_VERSION");
     eprintln!("current version: {}", current);
-    eprintln!("upgrading escudo...");
+
+    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+    match rt.block_on(check_upgrade_freshness(current)) {
+        Ok(Some(latest)) => {
+            eprintln!("upgrading escudo to v{}...", latest);
+        }
+        Ok(None) => {
+            // Already on latest or latest is too fresh — messages printed inside.
+            return;
+        }
+        Err(e) => {
+            eprintln!("failed to check latest version: {e}");
+            process::exit(2);
+        }
+    }
 
     let status = std::process::Command::new("cargo")
         .args(["install", "escudo", "--force"])
@@ -106,6 +120,66 @@ fn run_upgrade() {
             process::exit(2);
         }
     }
+}
+
+/// Freshness cooldown for escudo's own upgrades (days).
+const SELF_UPGRADE_COOLDOWN_DAYS: i64 = 7;
+
+/// Check that the latest version of escudo on crates.io is old enough to trust.
+///
+/// Returns `Ok(Some(version))` if an upgrade should proceed, `Ok(None)` if
+/// the user is already up-to-date or the latest version is too fresh.
+async fn check_upgrade_freshness(
+    current: &str,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    let client = reqwest::Client::builder()
+        .user_agent(format!("escudo/{}", env!("CARGO_PKG_VERSION")))
+        .timeout(std::time::Duration::from_secs(15))
+        .build()?;
+
+    let resp: serde_json::Value = client
+        .get("https://crates.io/api/v1/crates/escudo")
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+
+    let latest = resp["crate"]["newest_version"]
+        .as_str()
+        .ok_or("missing newest_version in crates.io response")?;
+
+    if latest == current {
+        eprintln!("already on the latest version (v{})", current);
+        return Ok(None);
+    }
+
+    // Find the publish date of the latest version.
+    let versions = resp["versions"]
+        .as_array()
+        .ok_or("missing versions array in crates.io response")?;
+
+    let published = versions
+        .iter()
+        .find(|v| v["num"].as_str() == Some(latest))
+        .and_then(|v| v["created_at"].as_str())
+        .ok_or("could not find publish date for latest version")?;
+
+    let published_at: chrono::DateTime<chrono::Utc> = published.parse()?;
+    let age_days = chrono::Utc::now()
+        .signed_duration_since(published_at)
+        .num_days();
+
+    if age_days < SELF_UPGRADE_COOLDOWN_DAYS {
+        eprintln!(
+            "latest version v{} was published {} day(s) ago — too fresh (cooldown: {} days)",
+            latest, age_days, SELF_UPGRADE_COOLDOWN_DAYS,
+        );
+        eprintln!("escudo applies its own freshness check to upgrades. try again later.");
+        return Ok(None);
+    }
+
+    Ok(Some(latest.to_string()))
 }
 
 fn run_audit(cli: Cli) {
