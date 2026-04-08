@@ -213,7 +213,7 @@ Escudo can be used as a library. Add it to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-escudo = "0.1.1"
+escudo = "0.1.3"
 ```
 
 ```rust
